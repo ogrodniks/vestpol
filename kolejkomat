@@ -1,0 +1,167 @@
+async function main(workbook: ExcelScript.Workbook) {
+
+	// =====================================================
+	// SYS LOCK SHEET
+	// =====================================================
+
+	const sysSheet = workbook.getWorksheet("Obecność");
+	if (!sysSheet) return;
+
+	const sysTable = sysSheet.getTable("SYS_ProcesKolejkomat");
+	const lockRange = sysTable.getRangeBetweenHeaderAndTotal();
+
+	let lockAcquired = false;
+
+	try {
+
+		// =====================================================
+		// LOCK CHECK
+		// =====================================================
+
+		const sysRow = lockRange.getValues()[0];
+		const isLocked = String(sysRow[4]).toUpperCase() === "TRUE";
+
+		if (isLocked) {
+			console.log("Proces już trwa.");
+			return;
+		}
+
+		// =====================================================
+		// START PROCESS
+		// =====================================================
+
+		lockRange.getCell(0, 4).setValue("TRUE");
+		lockRange.getCell(0, 2).setValue(new Date().toISOString());
+		lockRange.getCell(0, 3).setValue("");
+		lockRange.getCell(0, 1).setValue("UruchamianieSkryptu");
+		lockRange.getCell(0, 0).setValue("1");
+
+		lockAcquired = true;
+
+		// =====================================================
+		// SNAPSHOT TIMESTAMPS
+		// =====================================================
+
+		const logTable = workbook.getTable("query_nowe_kolejkomat_logistyka");
+		const szwTable = workbook.getTable("query_nowe_kolejkomat_szwalnia");
+
+		const oldLogTime = String(
+			logTable.getColumnByName("Time")
+				.getRangeBetweenHeaderAndTotal()
+				.getCell(0, 0)
+				.getValue()
+		);
+
+		const oldSzwTime = String(
+			szwTable.getColumnByName("Time")
+				.getRangeBetweenHeaderAndTotal()
+				.getCell(0, 0)
+				.getValue()
+		);
+
+		// =====================================================
+		// REFRESH CONNECTIONS
+		// =====================================================
+
+		workbook.refreshAllDataConnections();
+
+		lockRange.getCell(0, 1).setValue("OdświeżanieTabel");
+		lockRange.getCell(0, 0).setValue("2");
+
+		// =====================================================
+		// WATCHDOG LOOP (MAX 15 MIN)
+		// =====================================================
+
+		const delayMs = 5000;
+		const maxWait = Math.max(1, Math.floor((15 * 60 * 1000) / delayMs));
+
+		let waitCount = 0;
+		let refreshed = false;
+
+		while (!refreshed && waitCount < maxWait) {
+
+			await delay(delayMs);
+
+			try {
+
+				const newLogTime = String(
+					logTable.getColumnByName("Time")
+						.getRangeBetweenHeaderAndTotal()
+						.getCell(0, 0)
+						.getValue()
+				);
+
+				const newSzwTime = String(
+					szwTable.getColumnByName("Time")
+						.getRangeBetweenHeaderAndTotal()
+						.getCell(0, 0)
+						.getValue()
+				);
+
+				const logDone =
+					(newLogTime !== oldLogTime) ||
+					((!oldLogTime || oldLogTime === "") && (!newLogTime || newLogTime === ""));
+
+				const szwDone =
+					(newSzwTime !== oldSzwTime) ||
+					((!oldSzwTime || oldSzwTime === "") && (!newSzwTime || newSzwTime === ""));
+
+				if (logDone && szwDone) {
+					// Timestamp się zmienił ale dane mogą się jeszcze ładować —
+					// czekamy 5 sekund zanim uznamy refresh za gotowy
+					await delay(10000);
+					refreshed = true;
+					break;
+				}
+
+			} catch (loopError) {
+				// Tabela chwilowo niedostępna podczas refreshu — czekamy dalej
+				console.log(`Iteracja ${waitCount}: tabela niedostępna, czekam...`);
+			}
+
+			waitCount++;
+		}
+
+		// =====================================================
+		// TIMEOUT HANDLING
+		// =====================================================
+
+		if (!refreshed) {
+
+			lockRange.getCell(0, 1).setValue("TimeoutRefresh");
+			lockRange.getCell(0, 0).setValue("99");
+			lockRange.getCell(0, 3).setValue(new Date().toISOString());
+
+			return;
+		}
+
+		// =====================================================
+		// READY STATE
+		// =====================================================
+
+		lockRange.getCell(0, 1).setValue("CzekanieNaFlow");
+		lockRange.getCell(0, 0).setValue("3");
+		lockRange.getCell(0, 4).setValue("TRUE");
+
+		console.log("Refresh completed.");
+
+	} catch (error) {
+
+		const msg = error instanceof Error ? error.message : JSON.stringify(error) ?? String(error);
+		console.log("Script error:", msg);
+
+		lockRange.getCell(0, 1).setValue("Error");
+		lockRange.getCell(0, 0).setValue("500");
+		lockRange.getCell(0, 3).setValue(new Date().toISOString());
+
+	} finally {
+
+		if (lockAcquired) {
+			lockRange.getCell(0, 4).setValue("FALSE");
+		}
+	}
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
