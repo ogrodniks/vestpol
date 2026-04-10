@@ -1,0 +1,29 @@
+function main(workbook: ExcelScript.Workbook) {
+
+    const tableName = "SYS_ProcesKolejkomat";
+    const newStatus = "aktualizacja_logistyka";
+
+    // Pobranie tabeli
+    const table = workbook.getTable(tableName);
+
+    if (!table) {
+        throw new Error(`Tabela ${tableName} nie istnieje`);
+    }
+
+    const dataRange = table.getRangeBetweenHeaderAndTotal();
+    const values = dataRange.getValues();
+
+    // Indeks kolumny Status
+    const idxStatus = table.getColumnByName("Status").getIndex();
+
+    if (values.length === 0) return;
+
+    // Ustawienie statusu dla wszystkich wierszy
+    for (let i = 0; i < values.length; i++) {
+        values[i][idxStatus] = newStatus;
+    }
+
+    // Jednorazowy zapis (wydajnie)
+    dataRange.setValues(values);
+
+}
