@@ -1,7 +1,7 @@
 function main(workbook: ExcelScript.Workbook) {
 
     const tableName = "SYS_ProcesKolejkomat";
-    const newStatus = "aktualizacja_logistyka";
+    const newStatus = "akt_status";
 
     // Pobranie tabeli głównej
     const table = workbook.getTable(tableName);
