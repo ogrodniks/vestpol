@@ -1,0 +1,109 @@
+----SKRYPT o NAZWIE kol_ref_05_06:
+function main(workbook: ExcelScript.Workbook): string {
+
+    // ── HELPER: zapis do kolumny 'id' w tabeli akt_status ───────────────────
+    function setAktStatus(workbook: ExcelScript.Workbook, value: string) {
+        const sheet = workbook.getWorksheet("Obecność");
+        const table = sheet.getTable("akt_status");
+        const col = table.getColumnByName("id");
+        col.getRangeBetweenHeaderAndTotal().getCell(0, 0).setValue(value);
+    }
+
+    // ── KROK 0: Oznacz że trwa odświeżanie ──────────────────────────────────
+    setAktStatus(workbook, "trwa odświeżanie");
+
+    // ── KROK 1: Odśwież wszystkie połączenia ─────────────────────────────────
+    workbook.refreshAllDataConnections();
+
+    // ── KROK 2: Czekaj aż zmieni się CzasTeraz w tabeli kolejkomat_statusy ──
+    const MAX_WAIT_MS = 60000;
+    const CHECK_INTERVAL = 2000;
+    const startTime = Date.now();
+
+    // Odczytaj POCZĄTKOWY czas przed odświeżeniem
+    let initialTime: string | null = null;
+    try {
+        const bypassSheet = workbook.getWorksheet("bypass");
+        const table = bypassSheet.getTable("kolejkomat_statusy");
+        const col = table.getColumnByName("CzasTeraz");
+        const values = col.getRangeBetweenHeaderAndTotal().getValues();
+        if (values.length > 0 && values[0][0] !== "") {
+            initialTime = String(values[0][0]);
+        }
+    } catch (e) {
+        // Tabela/kolumna niedostępna — nie blokuj, idź dalej
+    }
+
+    let dataRefreshed = false;
+
+    while (!dataRefreshed && (Date.now() - startTime) < MAX_WAIT_MS) {
+
+        // Busy wait 2 sekundy
+        const waitUntil = Date.now() + CHECK_INTERVAL;
+        while (Date.now() < waitUntil) { /* busy wait */ }
+
+        try {
+            const bypassSheet = workbook.getWorksheet("bypass");
+            const table = bypassSheet.getTable("kolejkomat_statusy");
+            const col = table.getColumnByName("CzasTeraz");
+            const values = col.getRangeBetweenHeaderAndTotal().getValues();
+
+            if (values.length > 0 && values[0][0] !== "") {
+                const currentTime = String(values[0][0]);
+
+                if (initialTime === null) {
+                    // Nie było danych na starcie — teraz są, uznajemy za odświeżone
+                    dataRefreshed = true;
+                } else if (currentTime !== initialTime) {
+                    // Czas się zmienił — odświeżanie zakończone
+                    dataRefreshed = true;
+                }
+            }
+            // Jeśli values puste lub "" — cierpliwie czekaj dalej
+
+        } catch (e) {
+            // Tabela chwilowo niedostępna podczas ładowania — czekaj dalej
+        }
+    }
+
+    // ── KROK 3: Odśwież wszystkie PivotTable w każdym arkuszu ────────────────
+    const sheets = workbook.getWorksheets();
+    let pivotCount = 0;
+
+    for (const sheet of sheets) {
+        const pivots = sheet.getPivotTables();
+        for (const pivot of pivots) {
+            pivot.refresh();
+            pivotCount++;
+        }
+    }
+
+    // ── KROK 4: Wpisz timestamp w formacie ISO (strefa Warszawa) ─────────────
+    // Office Scripts działa w UTC — Warszawa to UTC+1 (zima) lub UTC+2 (lato)
+    // Wykrywamy DST sprawdzając przesunięcie dla maja (lato = +2h)
+    const nowUtc = new Date();
+
+    // Prosta detekcja DST dla strefy Europe/Warsaw:
+    // DST aktywne od ostatniej niedzieli marca do ostatniej niedzieli października
+    const month = nowUtc.getUTCMonth(); // 0=sty, 9=paź
+    const isDST = month >= 2 && month <= 9; // przybliżenie: marzec–październik
+    const offsetMs = isDST ? 2 * 3600000 : 1 * 3600000;
+
+    const warsawTime = new Date(nowUtc.getTime() + offsetMs);
+
+    // Format: 2026-05-12T12:14:30.5149699
+    const iso = warsawTime.toISOString().replace("Z", "");
+
+    // Znajdź tabelę akt_status w arkuszu Obecność
+    const obecnoscSheet = workbook.getWorksheet("Obecność");
+    const aktStatusTable = obecnoscSheet.getTable("akt_status");
+
+    // Pierwsza kolumna tabeli, pierwszy wiersz danych (pod nagłówkiem)
+    const firstCol = aktStatusTable.getColumns()[0];
+    const dataRange = firstCol.getRangeBetweenHeaderAndTotal();
+    dataRange.getCell(0, 0).setValue(iso);
+
+    setAktStatus(workbook, "odświeżone");
+
+    return `OK | odświeżono: ${iso} | pivotów: ${pivotCount} | dataRefreshed: ${dataRefreshed}`;
+}
